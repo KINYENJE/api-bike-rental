@@ -14,7 +14,7 @@ const Review = require('./models/reviewSchema');
 
 
 const app = express();
-const port = 5000;
+const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json());
@@ -40,6 +40,8 @@ mongoose.connect(connectionString)
 
 app.get('/', (req, res) => {
   res.send('Hello World!');
+
+  console.log('Hello World!');
 
 });
 
