@@ -3,7 +3,7 @@ require('dotenv').config();
 const { default: mongoose } = require('mongoose');
 const cors = require('cors');
 const multer = require('multer');
-const upload = multer({ dest: 'uploads/' }); // uploads directory for storing files is created automatically when multer is used inorder to store the uploaded files temporarily before processing them this is not the final storage location and however the files are deleted after processing them. if the files are not deleted they will accumulate in the uploads directory and take up space on the server. so it is important to delete the files after processing them. You can use the fs module to delete the files after processing them.
+const upload = multer({storage: multer.memoryStorage()}); // Use memory storage for file uploads
 const fs = require('fs');
 const Tesseract = require('tesseract.js');
 const cloudinary = require('cloudinary').v2;
@@ -21,7 +21,7 @@ const Booking = require('./models/bookingSchema');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors());
+app.use(cors()); // Enable CORS for all routes
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -60,18 +60,12 @@ app.get('/', (req, res) => {
 app.post('/api/signup', upload.single('idPic'), async (req, res) => {
   try {
     // 1. OCR Verification
-    const imagePath = req.file.path;
-    const { data: { text } } = await Tesseract.recognize(imagePath, 'eng');
+    const imageBuffer = req.file.buffer; // Get the file buffer from multer
+    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
     // Check if Kenyan ID keywords are present in the text
     const isKenyanID = /REPUBLIC OF KENYA|IDENTITY CARD|NATIONAL IDENTITY CARD/i.test(text);
     if (!isKenyanID) {
       console.error('Invalid ID:', text);
-      fs.unlink(imagePath, (err) => {
-        if (err) {
-          console.error('Error deleting temporary file:', err);
-        }
-        console.log('Temporary file deleted successfully');
-      });
       return res.status(400).json({ message: 'Invalid ID.'});
       
     }
@@ -80,20 +74,27 @@ app.post('/api/signup', upload.single('idPic'), async (req, res) => {
     // Check if ID number matches the text
     if (!text.includes(req.body.idNumber)) {
       console.error('ID number does not match:', text);
-      fs.unlink(imagePath, (err) => {
-        if (err) {
-          console.error('Error deleting temporary file:', err);
-        }
-        console.log('Temporary file deleted successfully');
-      });
       return res.status(400).json({ message: 'ID number does not match the ID picture.' });
       
     }
 
-    // 2. Upload to Cloudinary
-    const cloudinaryResult = await cloudinary.uploader.upload(imagePath, {
-      folder: 'idPics',
-    });
+    // 2. Upload ID picture to Cloudinary
+    const streamifier = require('streamifier');
+
+    const uploadFromBuffer = (buffer) => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'idPics' },
+          (error, result) => {
+            if (result) resolve(result);
+            else reject(error);
+          }
+        );
+        streamifier.createReadStream(buffer).pipe(stream);
+      });
+    };
+
+    const cloudinaryResult = await uploadFromBuffer(imageBuffer);
     const idPicUrl = cloudinaryResult.secure_url;
     console.log('ID picture uploaded to Cloudinary:', idPicUrl);
 
@@ -113,29 +114,10 @@ app.post('/api/signup', upload.single('idPic'), async (req, res) => {
     });
     await user.save();
 
-    // Delete the temporary file after processing
-    fs.unlink(imagePath, (err) => {
-      if (err) {
-        console.error('Error deleting temporary file:', err);
-      } else {
-        console.log('Temporary file deleted successfully');
-      }
-    });
 
     res.status(200).json({ status: 'ok', message: 'User created', user });
   } catch (err) {
-    // delete uploads file if error occurs
-    if (req.file && req.file.path) {
-      fs.unlink(req.file.path, (err) => {
-        if (err) {
-          console.error('Error deleting temporary file:', err);
-        } else {
-          console.log('Temporary file deleted successfully');
-        }
-      });
-    }
     res.status(400).json({ message: 'Error', err });
-    console.error('Error creating user:', err);
   }
 });
 
