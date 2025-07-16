@@ -156,6 +156,29 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+app.get('/api/check-user', async (req, res) => {
+  const { email } = req.query;
+  if (!email) {
+    return res.status(400).json({ exists: false, message: "No email provided" });
+  }
+  const user = await User.findOne({ email });
+  if (user) {
+    res.json({
+      exists: true,
+      user: {
+        isOwner: user.isOwner,
+        email: user.email,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        idPic: user.idPic
+      }
+    });
+  } else {
+    res.json({ exists: false });
+  }
+});
+
 app.put('/api/booking/:id', async (req, res) => {
   const bookingId = req.params.id;
   const status = req.body.status;
