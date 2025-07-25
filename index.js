@@ -127,7 +127,9 @@ app.post('/api/signup', upload.single('idPic'), async (req, res) => {
 
     // OCR Verification
     const imageBuffer = req.file.buffer;
-    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
+    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng', {
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@4.0.0/tesseract-core-simd.wasm.js'
+    });
     console.log('OCR Text:', text);
 
     // Normalize for better matching
