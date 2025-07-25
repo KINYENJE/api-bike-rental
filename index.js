@@ -21,10 +21,7 @@ const Booking = require('./models/bookingSchema');
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-app.use(cors({
-  origin: ['https://bikey-rental.vercel.app'],
-  credentials: true
-})); // Enable CORS for all routes
+app.use(cors()); // Enable CORS for all routes
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
