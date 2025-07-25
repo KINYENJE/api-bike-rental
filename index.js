@@ -103,7 +103,9 @@ app.post('/api/signup', upload.single('idPic'), async (req, res) => {
 
 
     // 3. Save user to MongoDB
-    const hashedPassword = await bcrypt.hashSync(req.body.password, 10);
+    const hashedPassword = req.body.password
+      ? await bcrypt.hashSync(req.body.password, 10)
+      : undefined;
     const user = new User({
       username: req.body.username,
       firstName: req.body.firstName,
