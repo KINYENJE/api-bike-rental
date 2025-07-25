@@ -6,6 +6,7 @@ const multer = require('multer');
 const upload = multer({storage: multer.memoryStorage()}); // Use memory storage for file uploads
 const fs = require('fs');
 const Tesseract = require('tesseract.js');
+const { createWorker } = require('tesseract.js');
 const cloudinary = require('cloudinary').v2;
 
 const bcrypt = require('bcrypt');
@@ -122,14 +123,26 @@ app.get('/', (req, res) => {
 // });
 
 app.post('/api/signup', upload.single('idPic'), async (req, res) => {
+  console.log('Received signup request:', req.body);
+  console.log('File:', req.file ? req.file.originalname : 'No file uploaded');
   try {
     const existingUser = await User.findOne({ email: req.body.email });
 
     // OCR Verification
     const imageBuffer = req.file.buffer;
-    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng', {
-      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@4.0.0/tesseract-core-simd.wasm.js'
+    // const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
+    const worker = await createWorker({
+      corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@4.0.0/tesseract-core-simd.wasm.js',
+      langPath: 'https://tessdata.projectnaptha.com/4.0.0_best',
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@4.0.2/dist/worker.min.js',
     });
+
+    await worker.load();
+    await worker.loadLanguage('eng');
+    await worker.initialize('eng');
+    const { data: { text } } = await worker.recognize(imageBuffer);
+    await worker.terminate();
+
     console.log('OCR Text:', text);
 
     // Normalize for better matching
