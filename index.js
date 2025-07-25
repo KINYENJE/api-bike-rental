@@ -59,6 +59,8 @@ app.get('/', (req, res) => {
 });
 
 app.post('/api/signup', upload.single('idPic'), async (req, res) => {
+  console.log('Received signup request:', req.body);
+  console.log('Received file:', req.file ? req.file.originalname : 'No file uploaded');
   try {
     // 1. OCR Verification
     const imageBuffer = req.file.buffer; // Get the file buffer from multer
