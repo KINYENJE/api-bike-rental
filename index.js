@@ -25,6 +25,7 @@ const PORT = process.env.PORT || 5000;
 app.use(cors()); // Enable CORS for all routes
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use('/tesseract', express.static('public/tesseract'));
 
 
 let connectionString = process.env.MONGODB_CONNECTION_STRING; 
@@ -51,6 +52,9 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET,
 });
 
+
+
+
 app.get('/', (req, res) => {
   res.send('Hello BIKEY World!');
 
@@ -58,101 +62,43 @@ app.get('/', (req, res) => {
 
 });
 
-app.post('/api/signup', upload.single('idPic'), async (req, res) => {
-  console.log('Received signup request:', req.body);
-  console.log('Received file:', req.file ? req.file.originalname : 'No file uploaded');
-  try {
-    // 1. OCR Verification
-    const imageBuffer = req.file.buffer; // Get the file buffer from multer
-    const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
-    // Check if Kenyan ID keywords are present in the text
-    const isKenyanID = /REPUBLIC OF KENYA|IDENTITY CARD|NATIONAL IDENTITY CARD/i.test(text);
-    if (!isKenyanID) {
-      console.error('Invalid ID:', text);
-      return res.status(400).json({ message: 'Invalid ID.'});
-      
-    }
-    console.log('OCR Text:', text);
-
-    // Check if ID number matches the text
-    if (!text.includes(req.body.idNumber)) {
-      console.error('ID number does not match:', text);
-      return res.status(400).json({ message: 'ID number does not match the ID picture.' });
-      
-    }
-
-    // 2. Upload ID picture to Cloudinary
-    const streamifier = require('streamifier');
-
-    const uploadFromBuffer = (buffer) => {
-      return new Promise((resolve, reject) => {
-        const stream = cloudinary.uploader.upload_stream(
-          { folder: 'idPics' },
-          (error, result) => {
-            if (result) resolve(result);
-            else reject(error);
-          }
-        );
-        streamifier.createReadStream(buffer).pipe(stream);
-      });
-    };
-
-    const cloudinaryResult = await uploadFromBuffer(imageBuffer);
-    const idPicUrl = cloudinaryResult.secure_url;
-    console.log('ID picture uploaded to Cloudinary:', idPicUrl);
-
-
-    // 3. Save user to MongoDB
-    const hashedPassword = req.body.password
-      ? await bcrypt.hashSync(req.body.password, 10)
-      : undefined;
-    const user = new User({
-      username: req.body.username,
-      firstName: req.body.firstName,
-      lastName: req.body.lastName,
-      phone: req.body.phone,
-      idNumber: req.body.idNumber,
-      idPic: idPicUrl,
-      isOwner: req.body.isOwner,
-      email: req.body.email,
-      password: hashedPassword,
-    });
-    await user.save();
-
-
-    res.status(200).json({ status: 'ok', message: 'User created', user });
-  } catch (err) {
-    res.status(400).json({ message: 'Error', err });
-  }
-});
-
 // app.post('/api/signup', upload.single('idPic'), async (req, res) => {
 //   console.log('Received signup request:', req.body);
-//   try {
-//     const existingUser = await User.findOne({ email: req.body.email });
+//   console.log('Received file:', req.file ? req.file.originalname : 'No file uploaded');
 
-//     // OCR Verification
-//     const imageBuffer = req.file.buffer;
-//     const { data: { text } } = await Tesseract.recognize(imageBuffer, 'eng');
+//   const worker = await createWorker({
+//     corePath: `${process.env.API_URL}/tesseract/tesseract-core-simd.wasm.js`,
+//     workerPath: `${process.env.API_URL}/tesseract/worker.min.js`,
+//     langPath: `https://tessdata.projectnaptha.com/4.0.0_best`, // or your own if you want
+//   });
+
+//   try {
+//     // 1. OCR Verification
+//     const imageBuffer = req.file.buffer; // Get the file buffer from 
+//     await worker.load();
+//     await worker.loadLanguage('eng');
+//     await worker.initialize('eng');
+//     const { data: { text } } = await worker.recognize(imageBuffer);
+//     await worker.terminate();
+//     // Check if Kenyan ID keywords are present in the text
+//     const isKenyanID = /REPUBLIC OF KENYA|IDENTITY CARD|NATIONAL IDENTITY CARD/i.test(text);
+//     if (!isKenyanID) {
+//       console.error('Invalid ID:', text);
+//       return res.status(400).json({ message: 'Invalid ID.'});
+      
+//     }
 //     console.log('OCR Text:', text);
 
-//     // Normalize for better matching
-//     const normalizedText = text.replace(/\s+/g, '').toLowerCase();
-//     const normalizedId = req.body.idNumber.replace(/\s+/g, '').toLowerCase();
-
-//     // Check if Kenyan ID keywords are present
-//     const isKenyanID = /republicofkenya|identitycard|nationalidentitycard/i.test(normalizedText);
-//     if (!isKenyanID) {
-//       return res.status(400).json({ message: 'Invalid ID.' });
-//     }
-
 //     // Check if ID number matches the text
-//     if (!normalizedText.includes(normalizedId)) {
+//     if (!text.includes(req.body.idNumber)) {
+//       console.error('ID number does not match:', text);
 //       return res.status(400).json({ message: 'ID number does not match the ID picture.' });
+      
 //     }
 
-//     // Upload ID picture to Cloudinary
+//     // 2. Upload ID picture to Cloudinary
 //     const streamifier = require('streamifier');
+
 //     const uploadFromBuffer = (buffer) => {
 //       return new Promise((resolve, reject) => {
 //         const stream = cloudinary.uploader.upload_stream(
@@ -165,28 +111,16 @@ app.post('/api/signup', upload.single('idPic'), async (req, res) => {
 //         streamifier.createReadStream(buffer).pipe(stream);
 //       });
 //     };
+
 //     const cloudinaryResult = await uploadFromBuffer(imageBuffer);
 //     const idPicUrl = cloudinaryResult.secure_url;
+//     console.log('ID picture uploaded to Cloudinary:', idPicUrl);
 
-//     // If user exists and has no idPic, update their record
-//     if (existingUser && !existingUser.idPic) {
-//       existingUser.idPic = idPicUrl;
-//       existingUser.idNumber = req.body.idNumber;
-//       // Optionally update other fields if needed
-//       await existingUser.save();
-//       return res.status(200).json({ status: 'ok', message: 'ID picture uploaded, registration completed', user: existingUser });
-//     }
 
-//     // If user exists and already has idPic, block signup
-//     if (existingUser && existingUser.idPic) {
-//       return res.status(400).json({ message: 'Email already registered.' });
-//     }
-
-//     // --- Normal signup for new users ---
+//     // 3. Save user to MongoDB
 //     const hashedPassword = req.body.password
 //       ? await bcrypt.hashSync(req.body.password, 10)
 //       : undefined;
-
 //     const user = new User({
 //       username: req.body.username,
 //       firstName: req.body.firstName,
@@ -200,11 +134,123 @@ app.post('/api/signup', upload.single('idPic'), async (req, res) => {
 //     });
 //     await user.save();
 
+
 //     res.status(200).json({ status: 'ok', message: 'User created', user });
 //   } catch (err) {
 //     res.status(400).json({ message: 'Error', err });
 //   }
 // });
+
+app.post('/api/signup', upload.single('idPic'), async (req, res) => {
+  console.log('Received signup request:', req.body);
+  try {
+    const existingUser = await User.findOne({ email: req.body.email });
+
+    // OCR Verification using OCR.space instead of Tesseract
+    const imageBuffer = req.file.buffer;
+    console.log('Image buffer received:', imageBuffer.length, 'bytes');
+
+    // Create FormData for OCR.space - using FormData instead of base64
+    const formData = new URLSearchParams();
+    formData.append('apikey', 'helloworld');
+    formData.append('language', 'eng');
+    formData.append('isOverlayRequired', 'false');
+    formData.append('scale', 'true');
+    formData.append('OCREngine', '2'); // More accurate engine
+    
+    // Convert buffer to base64 with explicit image type
+    const base64Image = imageBuffer.toString('base64');
+    formData.append('base64Image', `data:image/jpeg;base64,${base64Image}`);
+
+    // Call OCR.space API
+    const response = await fetch('https://api.ocr.space/parse/image', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: formData
+    });
+    
+    const ocrResult = await response.json();
+    console.log('OCR Result:', ocrResult);
+    
+    if (ocrResult.IsErroredOnProcessing || !ocrResult.ParsedResults || ocrResult.ParsedResults.length === 0) {
+      console.error('OCR Error:', ocrResult);
+      return res.status(400).json({ message: 'Failed to read ID card text. Please try again with a clearer image.' });
+    }
+    
+    const text = ocrResult.ParsedResults[0].ParsedText;
+    console.log('OCR Text:', text);
+
+    // Normalize for better matching
+    const normalizedText = text.replace(/\s+/g, '').toLowerCase();
+    const normalizedId = req.body.idNumber.replace(/\s+/g, '').toLowerCase();
+
+    // Check if Kenyan ID keywords are present
+    const isKenyanID = /republicofkenya|identitycard|nationalidentitycard/i.test(normalizedText);
+    if (!isKenyanID) {
+      return res.status(400).json({ message: 'Invalid ID.' });
+    }
+
+    // Check if ID number matches the text
+    if (!normalizedText.includes(normalizedId)) {
+      return res.status(400).json({ message: 'ID number does not match the ID picture.' });
+    }
+
+    // Upload ID picture to Cloudinary
+    const streamifier = require('streamifier');
+    const uploadFromBuffer = (buffer) => {
+      return new Promise((resolve, reject) => {
+        const stream = cloudinary.uploader.upload_stream(
+          { folder: 'idPics' },
+          (error, result) => {
+            if (result) resolve(result);
+            else reject(error);
+          }
+        );
+        streamifier.createReadStream(buffer).pipe(stream);
+      });
+    };
+    const cloudinaryResult = await uploadFromBuffer(imageBuffer);
+    const idPicUrl = cloudinaryResult.secure_url;
+
+    // If user exists and has no idPic, update their record
+    if (existingUser && !existingUser.idPic) {
+      existingUser.idPic = idPicUrl;
+      existingUser.idNumber = req.body.idNumber;
+      // Optionally update other fields if needed
+      await existingUser.save();
+      return res.status(200).json({ status: 'ok', message: 'ID picture uploaded, registration completed', user: existingUser });
+    }
+
+    // If user exists and already has idPic, block signup
+    if (existingUser && existingUser.idPic) {
+      return res.status(400).json({ message: 'Email already registered.' });
+    }
+
+    // --- Normal signup for new users ---
+    const hashedPassword = req.body.password
+      ? await bcrypt.hashSync(req.body.password, 10)
+      : undefined;
+
+    const user = new User({
+      username: req.body.username,
+      firstName: req.body.firstName,
+      lastName: req.body.lastName,
+      phone: req.body.phone || '',
+      idNumber: req.body.idNumber || '',
+      idPic: idPicUrl,
+      isOwner: req.body.isOwner,
+      email: req.body.email,
+      password: hashedPassword,
+    });
+    await user.save();
+
+    res.status(200).json({ status: 'ok', message: 'User created', user });
+  } catch (err) {
+    res.status(400).json({ message: 'Error', err });
+  }
+});
 
 
 app.post('/api/login', async (req, res) => {

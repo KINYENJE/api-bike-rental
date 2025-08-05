@@ -36,7 +36,7 @@ const userSchema = new Schema({
   },
   phone: {
     type: String,
-    required: [true, 'Phone number is required'],
+    // required: [true, 'Phone number is required'],
     validate: {
       validator: function (v) {
         return /^[0-9]{10}$/.test(v); // 10 digits phone number {10} means exactly 10 characters and all digits {0-9 only}
@@ -46,7 +46,7 @@ const userSchema = new Schema({
   },
   idNumber: {
     type: String,
-    required: [true, 'ID number is required'],
+    // required: [true, 'ID number is required'],
     // validate: {
     //   validator: function (v) {
     //     return /^[0-9]{8}$/.test(v); // 8 digits ID number {8} means exactly 8 characters
