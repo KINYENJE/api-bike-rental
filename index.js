@@ -86,7 +86,7 @@ app.post('/api/forgot-password', async (req, res) => {
     await user.save();
 
     // Send reset email
-    const resetLink = `http://localhost:3000/reset-password?token=${resetToken}&email=${email}`;
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}&email=${email}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -94,7 +94,7 @@ app.post('/api/forgot-password', async (req, res) => {
       html: `
         <h2>Password Reset Request</h2>
         <p>Click the link below to reset your password:</p>
-        <a href="${resetUrl}">Reset Password</a>
+        <a href="${resetLink}">Reset Password</a>
         <p>This link expires in 1 hour.</p>
       `,
     };
