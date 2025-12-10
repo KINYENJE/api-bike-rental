@@ -86,7 +86,7 @@ app.post('/api/forgot-password', async (req, res) => {
     await user.save();
 
     // Send reset email
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}&email=${email}`;
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
     const mailOptions = {
       from: process.env.EMAIL_USER,
       to: email,
@@ -111,9 +111,8 @@ app.post('/api/forgot-password', async (req, res) => {
 // Reset password
 app.post('/api/reset-password', async (req, res) => {
   try {
-    const { email, token, newPassword } = req.body;
+    const {  token, password } = req.body;
     const user = await User.findOne({
-      email,
       resetToken: token,
       resetTokenExpiry: { $gt: Date.now() },
     });
@@ -123,7 +122,7 @@ app.post('/api/reset-password', async (req, res) => {
     }
 
     // Hash new password and save
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const hashedPassword = await bcrypt.hash(password, 10);
     user.password = hashedPassword;
     user.resetToken = undefined;
     user.resetTokenExpiry = undefined;
