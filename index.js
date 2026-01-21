@@ -100,7 +100,7 @@ app.post('/api/forgot-password', async (req, res) => {
     };
     await transporter.sendMail(mailOptions);
 
-    res.status(200).json({ message: 'Password reset email sent' });
+    res.status(200).json({ status: 'ok', message: 'Reset link sent to your email.' });
   } catch (error) {
     console.error('Error in forgot-password:', error);
     res.status(500).json({ message: 'Internal server error', error });
