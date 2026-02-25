@@ -1,0 +1,12 @@
+name: Call API Cron
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Every 5 minutes
+
+jobs:
+  call-api:
+    runs-on: ubuntu-latest
+    steps:
+     - name: Call API Endpoint
+       run: curl -X POST https://api-bike-rental.vercel.app/api/cron

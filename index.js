@@ -20,6 +20,7 @@ const Bike = require('./models/bikeSchema');
 const Booking = require('./models/bookingSchema');
 // const Review = require('./models/reviewSchema');
 
+const cron = require('node-cron');
 
 
 const app = express();
@@ -65,6 +66,36 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// // Run every 5 minutes
+// cron.schedule('*/5 * * * *', async () => {
+//   const now = new Date();
+//   // Find all bookings that have ended but are still marked as active
+//   const expiredBookings = await Booking.find({ endTime: { $lt: now }, status: 'active' });
+//   for (const booking of expiredBookings) {
+//     booking.status = 'completed';
+//     await booking.save();
+//     // Optionally, update the bike's availability if you track it in the Bike model
+//     await Bike.findByIdAndUpdate(booking.bikeId, { available: true });
+//   }
+//   console.log('Checked and updated expired bookings');
+// });
+
+
+app.post('/api/cron', async (req, res) => {
+  try {
+    const now = new Date();
+    const expiredBookings = await Booking.find({ endTime: { $lt: now }, status: 'active' });
+    for (const booking of expiredBookings) {
+      booking.status = 'completed';
+      await booking.save();
+      await Bike.findByIdAndUpdate(booking.bikeId, { available: true });
+    }
+    res.status(200).json({ message: 'Cron job executed successfully.' });
+  } catch (err) {
+    console.error('Cron job error:', err);
+    res.status(500).json({ message: 'Cron job failed.' });
+  }
+});
 
 // Request password reset
 app.post('/api/forgot-password', async (req, res) => {
@@ -420,92 +451,112 @@ app.put('/api/booking/:id', async (req, res) => {
 }); 
 
 app.get('/api/bookings', async (req, res) => {
-  const accessToken = req.headers['authorization'].split(' ')[0];
-
-  if (!accessToken) {
-    return res.status(403).json({ message: 'No token provided' });
-  } else {
-    jwt.verify(accessToken, process.env.SECRET, async (err, decoded) => {
-      if (err) {
-        return res.status(401).json({ message: 'Unauthorized' });
-      } else {
-        const user = await User.findOne({ email: decoded.email });
-        const bookings = await Booking.find({ user: user._id });
-        res.status(200).json({ status: 'ok', bookings });
-      }
-    });
+ const email = req.query.email;
+ 
+ try {
+  let user = await User.findOne({ email });
+  if (!user) {
+    return res.status(404).json({ message: 'User not found' });
   }
+  const bookings = await Booking.find({ user: user._id });
+  console.log(bookings);
+  res.status(200).json({ status: 'ok', bookings, message: 'Bookings fetched successfully' });
+ } catch (err) {
+  res.status(400).json({ message: 'Error', err });
+  console.log(err);
+ }
+
+ 
 });
 
 
 
 app.post('/api/booking', async (req, res) => {
-  console.log(req.body);
-  const startTime = req.body.startTime;
-  const endTime = req.body.endTime;
-  const bikeId = req.body.bikeId;
-  const bikeType = req.body.bikeType;
-  const bikeLocation = req.body.bikeLocation;
-  const price = req.body.finalPrice;
-  const bikeOwner = req.body.bikeOwner;
-  
-
- // if bikeid is not in the database update the database with the bikeid and bikeowner and bike location and bike type
   try {
-    const bike = await Bike.findOne ({ _uuid : bikeId });
-    if (!bike) {
-      const bike = new Bike(
-        {
-          _uuid: bikeId,
-          owner: bikeOwner,
-          location: bikeLocation,
-          type: bikeType
-        }
-      );
-      await bike.save();
-    } else {
-      console.log("Bike already exists");
+    const { startTime, endTime, bikeId, bikeType, bikeOwner, bikeLocation, price } = req.body;
+    const email = req.query.email;
+    console.log(email)
+
+    if (!startTime || !endTime || !bikeId || !email) {
+      return res.status(400).json({ status: 'error', message: 'Missing required fields.' });
     }
-  } catch (err) {
-    res.status(400).json({ message: 'Error', err });
-  }
 
+    const user = await User.findOne({ email });
+    if (!user) {
+      console.error("User not found:", email);
+      return res.status(404).json({ status: 'error', message: 'User not found. Please sign up first.' });
+    }
 
-  
-  
-
-
-  const accessToken = req.headers['authorization'].split(' ')[0];
-  console.log(accessToken);
-
-  if (!accessToken) {
-    return res.status(403).json({ message: 'No token provided' });
-  } else {
-    jwt.verify(accessToken, process.env.SECRET, async (err, decoded) => {
-      if (err) {
-        return res.status(401).json({ message: 'Unauthorized' });
-      } else {
-        const user = await User.findOne({ email: decoded.email });
-        const booking = new Booking(
-          {
-            user: user._id,
-            customerEmail: user.email,
-            bikeId,
-            bikeOwner,
-            bikeType,
-            bikeLocation,
-            startTime,
-            endTime,
-            price,
-            
-          }
-        );
-        await booking.save();
-        res.status(200).json({ status: 'ok', message: 'Booking created', booking });
-      }
+    // Check for overlapping bookings
+    const overlappingBooking = await Booking.findOne({
+      bikeId: bikeId,
+      $or: [
+        { startTime: { $lt: endTime, $gte: startTime } },
+        { endTime: { $gt: startTime, $lte: endTime } },
+        { startTime: { $lte: startTime }, endTime: { $gte: endTime } }
+      ]
     });
+
+    if (overlappingBooking) {
+      return res.status(400).json({ status: 'error', message: 'Bike is already booked for the selected time.' });
+    }
+
+    // Create new booking
+    const booking = new Booking({
+      user: user._id,
+      bikeId,
+      bikeType,
+      bikeOwner,
+      bikeLocation,
+      startTime: new Date(startTime),
+      endTime: new Date(endTime),
+      price,
+      status: 'active'
+    });
+
+    await booking.save();
+
+    // Send email to user
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: user.email,
+      subject: 'Bike Booking Confirmation',
+      html: `
+        <h2>Booking Confirmed!</h2>
+        <p>You have successfully booked a bike.</p>
+        <ul>
+          <li><strong>Bike Owner:</strong> ${bikeOwner.name || bikeOwner}</li>
+          <li><strong>Booking Time:</strong> ${startTime} to ${endTime}</li>
+          <li><strong>Location:</strong> ${bikeLocation}</li>
+          <li><strong>Price:</strong> ${price}</li>
+        </ul>
+      `
+    });
+
+    // Send email to bike owner
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: 'testingjim232@gmail.com' || bikeOwner.email, // Fallback to bikeOwner.email if available
+      //to: bikeOwner.email,
+      subject: 'Your Bike Has Been Booked',
+      html: `
+        <h2>Your bike has been booked!</h2>
+        <ul>
+          <li><strong>User Name:</strong> ${user.name || ''}</li>
+          <li><strong>User Email:</strong> ${user.email}</li>
+          <li><strong>User Phone:</strong> ${user.phone || ''}</li>
+          <li><strong>Booking Time:</strong> ${startTime} to ${endTime}</li>
+          <li><strong>Location:</strong> ${bikeLocation}</li>
+          <li><strong>Price:</strong> ${price}</li>
+        </ul>
+      `
+    });
+
+    res.status(200).json({ status: 'ok', message: 'Booking successful', booking });
+  } catch (err) {
+    console.error('Booking error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
   }
-  
 });
 
 app.get('/api/userdata', async (req, res) => {

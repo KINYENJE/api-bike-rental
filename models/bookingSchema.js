@@ -40,7 +40,7 @@ const bookingSchema = new Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'approved', 'rejected'],
+    enum: ['active', 'completed'],
     default: 'pending',
   },
 }, { timestamps: true }, { collection: 'bookings' });

@@ -21,6 +21,10 @@ const bikeSchema = new Schema({
     required: [true, 'Bike location is required'],
     lowercase: true,
   },
+  available: {
+    type: Boolean,
+    default: true,
+  },
  
 }, { timestamps: true }, { collection: 'bikes' });
 
