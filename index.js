@@ -516,6 +516,9 @@ app.post('/api/booking', async (req, res) => {
 
     await booking.save();
 
+    const formattedStartTime = new Date(startTime).toLocaleString();
+    const formattedEndTime = new Date(endTime).toLocaleString();
+
     // Send email to user
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
@@ -526,7 +529,7 @@ app.post('/api/booking', async (req, res) => {
         <p>You have successfully booked a bike.</p>
         <ul>
           <li><strong>Bike Owner:</strong> ${bikeOwner.name || bikeOwner}</li>
-          <li><strong>Booking Time:</strong> ${startTime} to ${endTime}</li>
+          <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
           <li><strong>Location:</strong> ${bikeLocation}</li>
           <li><strong>Price:</strong> ${price}</li>
         </ul>
@@ -545,7 +548,7 @@ app.post('/api/booking', async (req, res) => {
           <li><strong>User Name:</strong> ${user.name || ''}</li>
           <li><strong>User Email:</strong> ${user.email}</li>
           <li><strong>User Phone:</strong> ${user.phone || ''}</li>
-          <li><strong>Booking Time:</strong> ${startTime} to ${endTime}</li>
+          <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
           <li><strong>Location:</strong> ${bikeLocation}</li>
           <li><strong>Price:</strong> ${price}</li>
         </ul>
