@@ -21,7 +21,14 @@ const Booking = require('./models/bookingSchema');
 // const Review = require('./models/reviewSchema');
 
 const cron = require('node-cron');
+const { createClient } = require('@sanity/client');
 
+const sanityClient = createClient({
+  projectId: process.env.SANITY_PROJECT_ID,
+  dataset: process.env.SANITY_DATASET,
+  apiVersion: '2024-01-01',
+  useCdn: false,
+});
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -473,27 +480,44 @@ app.get('/api/bookings', async (req, res) => {
 
 app.post('/api/booking', async (req, res) => {
   try {
-    const { startTime, endTime, bikeId, bikeType, bikeOwner, bikeLocation, price } = req.body;
+    const { startTime, endTime, bikeId, bikeType, bikeOwner, bikeLocation } = req.body;
     const email = req.query.email;
-    console.log(email)
 
     if (!startTime || !endTime || !bikeId || !email) {
       return res.status(400).json({ status: 'error', message: 'Missing required fields.' });
     }
 
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+
+    if (end <= start) {
+      return res.status(400).json({ status: 'error', message: 'End time must be after start time.' });
+    }
+
+    // Fetch authoritative price from Sanity — never trust client-submitted price
+    const bike = await sanityClient.fetch(
+      `*[_type == "bike" && _id == $bikeId][0]{ price }`,
+      { bikeId }
+    );
+    if (!bike || bike.price == null) {
+      return res.status(404).json({ status: 'error', message: 'Bike not found or has no price set.' });
+    }
+
+    const hours = (end - start) / 1000 / 60 / 60;
+    const calculatedPrice = bike.price * hours;
+
     const user = await User.findOne({ email });
     if (!user) {
-      console.error("User not found:", email);
       return res.status(404).json({ status: 'error', message: 'User not found. Please sign up first.' });
     }
 
     // Check for overlapping bookings
     const overlappingBooking = await Booking.findOne({
-      bikeId: bikeId,
+      bikeId,
       $or: [
-        { startTime: { $lt: endTime, $gte: startTime } },
-        { endTime: { $gt: startTime, $lte: endTime } },
-        { startTime: { $lte: startTime }, endTime: { $gte: endTime } }
+        { startTime: { $lt: end, $gte: start } },
+        { endTime: { $gt: start, $lte: end } },
+        { startTime: { $lte: start }, endTime: { $gte: end } }
       ]
     });
 
@@ -501,23 +525,22 @@ app.post('/api/booking', async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'Bike is already booked for the selected time.' });
     }
 
-    // Create new booking
     const booking = new Booking({
       user: user._id,
       bikeId,
       bikeType,
       bikeOwner,
       bikeLocation,
-      startTime: new Date(startTime),
-      endTime: new Date(endTime),
-      price,
+      startTime: start,
+      endTime: end,
+      price: calculatedPrice,
       status: 'active'
     });
 
     await booking.save();
 
-    const formattedStartTime = new Date(startTime).toLocaleString();
-    const formattedEndTime = new Date(endTime).toLocaleString();
+    const formattedStartTime = start.toLocaleString();
+    const formattedEndTime = end.toLocaleString();
 
     // Send email to user
     await transporter.sendMail({
@@ -531,7 +554,7 @@ app.post('/api/booking', async (req, res) => {
           <li><strong>Bike Owner:</strong> ${bikeOwner.name || bikeOwner}</li>
           <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
           <li><strong>Location:</strong> ${bikeLocation}</li>
-          <li><strong>Price:</strong> ${price}</li>
+          <li><strong>Price:</strong> KSh ${calculatedPrice.toFixed(2)}</li>
         </ul>
       `
     });
@@ -539,8 +562,7 @@ app.post('/api/booking', async (req, res) => {
     // Send email to bike owner
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
-      to: 'testingjim232@gmail.com' || bikeOwner.email, // Fallback to bikeOwner.email if available
-      //to: bikeOwner.email,
+      to: 'testingjim232@gmail.com' || bikeOwner.email,
       subject: 'Your Bike Has Been Booked',
       html: `
         <h2>Your bike has been booked!</h2>
@@ -550,7 +572,7 @@ app.post('/api/booking', async (req, res) => {
           <li><strong>User Phone:</strong> ${user.phone || ''}</li>
           <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
           <li><strong>Location:</strong> ${bikeLocation}</li>
-          <li><strong>Price:</strong> ${price}</li>
+          <li><strong>Price:</strong> KSh ${calculatedPrice.toFixed(2)}</li>
         </ul>
       `
     });
