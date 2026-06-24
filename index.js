@@ -433,29 +433,71 @@ app.get('/api/check-user', async (req, res) => {
   }
 });
 
-app.put('/api/booking/:id', async (req, res) => {
-  const bookingId = req.params.id;
-  const status = req.body.status;
-  console.log(status);
-  console.log(bookingId);
+app.put('/api/user', async (req, res) => {
+  const email = req.query.email;
+  const { firstName, lastName, phone } = req.body;
 
-  // const accessToken = req.headers['authorization'].split(' ')[0];
+  if (!email) {
+    return res.status(400).json({ status: 'error', message: 'No email provided' });
+  }
 
   try {
-    const booking = await Booking.findOneAndReplace({ _id: bookingId }, { status });
+    const updates = {};
+    if (firstName !== undefined) updates.firstName = firstName;
+    if (lastName !== undefined) updates.lastName = lastName;
+    if (phone !== undefined) updates.phone = phone;
 
-    if (!booking) {
-      return res.status(404).json({ message: 'Booking not found' });
-    } else {
-      console.log(booking);
+    const user = await User.findOneAndUpdate(
+      { email },
+      updates,
+      { new: true, runValidators: true }
+    );
+
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
-   
-    res.status(200).json({ status: 'ok', message: 'Booking updated', booking });
+    res.status(200).json({
+      status: 'ok',
+      message: 'Profile updated successfully',
+      user: {
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        email: user.email,
+        phone: user.phone,
+        idNumber: user.idNumber,
+        idPic: user.idPic,
+        isOwner: user.isOwner,
+      },
+    });
   } catch (err) {
-    res.status(400).json({ message: 'Error', err });
+    // Surface mongoose validation errors (e.g. invalid phone) to the client
+    if (err.name === 'ValidationError') {
+      const message = Object.values(err.errors).map((e) => e.message).join(', ');
+      return res.status(400).json({ status: 'error', message });
+    }
+    console.error('Update profile error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
   }
-}); 
+});
+
+app.delete('/api/booking/:id', async (req, res) => {
+  const bookingId = req.params.id;
+
+  try {
+    const booking = await Booking.findByIdAndDelete(bookingId);
+
+    if (!booking) {
+      return res.status(404).json({ status: 'error', message: 'Booking not found' });
+    }
+
+    res.status(200).json({ status: 'ok', message: 'Booking cancelled', booking });
+  } catch (err) {
+    console.error('Cancel booking error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
 
 app.get('/api/bookings', async (req, res) => {
  const email = req.query.email;
