@@ -676,11 +676,13 @@ app.post('/api/booking', async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Bike not found or has no price set.' });
     }
 
-    // Charged per whole hour with a 1-hour minimum. The tiny epsilon avoids
-    // floating-point rounding a clean hour (e.g. 2.0000001) up to the next hour.
-    const rawHours = (end - start) / 1000 / 60 / 60;
-    const billableHours = Math.max(1, Math.ceil(rawHours - 1e-9));
-    const calculatedPrice = Math.round(bike.price * billableHours);
+    // Billed in 15-minute increments rounded down, with a 1-hour minimum.
+    // e.g. 1h10m -> 1h00m, 1h15m -> 1h15m. The epsilon guards against a clean
+    // boundary (e.g. exactly 90 min reading as 89.9999) flooring incorrectly.
+    const totalMinutes = (end - start) / 1000 / 60;
+    const blocks = Math.floor(totalMinutes / 15 + 1e-9);
+    const billableMinutes = Math.max(60, blocks * 15);
+    const calculatedPrice = Math.round((billableMinutes / 60) * bike.price);
 
     const user = await User.findOne({ email });
     if (!user) {
