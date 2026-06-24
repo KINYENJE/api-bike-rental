@@ -18,7 +18,7 @@ const jwt = require('jsonwebtoken');
 const User = require('./models/userSchema');
 const Bike = require('./models/bikeSchema');
 const Booking = require('./models/bookingSchema');
-// const Review = require('./models/reviewSchema');
+const Review = require('./models/reviewSchema');
 
 const cron = require('node-cron');
 const { createClient } = require('@sanity/client');
@@ -515,7 +515,105 @@ app.get('/api/bookings', async (req, res) => {
   console.log(err);
  }
 
- 
+
+});
+
+// ---------------------- Reviews ----------------------
+
+// Rating summary (average + count) for every bike, keyed by bikeId.
+// Used by the bikes listing page to show cumulative stars on each card.
+app.get('/api/reviews/summary', async (req, res) => {
+  try {
+    const summary = await Review.aggregate([
+      {
+        $group: {
+          _id: '$bikeId',
+          average: { $avg: '$rating' },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const map = {};
+    summary.forEach((item) => {
+      map[item._id] = {
+        average: Math.round(item.average * 10) / 10,
+        count: item.count,
+      };
+    });
+
+    res.status(200).json({ status: 'ok', summary: map });
+  } catch (err) {
+    console.error('Review summary error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
+
+// All reviews for a single bike, plus that bike's average + count.
+app.get('/api/reviews', async (req, res) => {
+  const { bikeId } = req.query;
+  if (!bikeId) {
+    return res.status(400).json({ status: 'error', message: 'bikeId is required.' });
+  }
+
+  try {
+    const reviews = await Review.find({ bikeId }).sort({ createdAt: -1 });
+    const count = reviews.length;
+    const average = count
+      ? Math.round((reviews.reduce((sum, r) => sum + r.rating, 0) / count) * 10) / 10
+      : 0;
+
+    res.status(200).json({ status: 'ok', reviews, average, count });
+  } catch (err) {
+    console.error('Fetch reviews error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
+
+// Create a review. Reviewer identity is resolved from the signed-in email.
+app.post('/api/reviews', async (req, res) => {
+  const email = req.query.email;
+  const { bikeId, rating, comment } = req.body;
+
+  if (!bikeId || !rating) {
+    return res.status(400).json({ status: 'error', message: 'bikeId and rating are required.' });
+  }
+
+  const numericRating = Number(rating);
+  if (Number.isNaN(numericRating) || numericRating < 1 || numericRating > 5) {
+    return res.status(400).json({ status: 'error', message: 'Rating must be between 1 and 5.' });
+  }
+
+  try {
+    let userName = 'Anonymous';
+    let userEmail = email;
+
+    if (email) {
+      const user = await User.findOne({ email });
+      if (user) {
+        userName = `${user.firstName || ''} ${user.lastName || ''}`.trim() || user.username || email;
+      }
+    }
+
+    const review = new Review({
+      bikeId,
+      userName,
+      userEmail,
+      rating: numericRating,
+      comment,
+    });
+
+    await review.save();
+
+    res.status(201).json({ status: 'ok', message: 'Review submitted', review });
+  } catch (err) {
+    if (err.name === 'ValidationError') {
+      const message = Object.values(err.errors).map((e) => e.message).join(', ');
+      return res.status(400).json({ status: 'error', message });
+    }
+    console.error('Create review error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
 });
 
 

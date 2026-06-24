@@ -2,15 +2,17 @@ const mongoose = require('mongoose');
 const { Schema } = mongoose;
 
 const reviewSchema = new Schema({
-  user: {
-    type: Schema.Types.ObjectId,
-    ref: 'User',
-    required: [true, 'User is required'],
-  },
+  // Sanity bike document _id (stored as a string, like bookings)
   bikeId: {
-    type: Schema.Types.ObjectId,
-    ref: 'Bike',
+    type: String,
     required: [true, 'Bike ID is required'],
+  },
+  userName: {
+    type: String,
+    required: [true, 'Reviewer name is required'],
+  },
+  userEmail: {
+    type: String,
   },
   rating: {
     type: Number,
@@ -20,7 +22,6 @@ const reviewSchema = new Schema({
   },
   comment: {
     type: String,
-    required: [true, 'Comment is required'],
   },
 }, { timestamps: true }, { collection: 'reviews' });
 
