@@ -16,7 +16,6 @@ const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 
 const User = require('./models/userSchema');
-const Bike = require('./models/bikeSchema');
 const Booking = require('./models/bookingSchema');
 const Review = require('./models/reviewSchema');
 
@@ -95,8 +94,9 @@ app.post('/api/cron', async (req, res) => {
     for (const booking of expiredBookings) {
       booking.status = 'completed';
       await booking.save();
-      await Bike.findByIdAndUpdate(booking.bikeId, { available: true });
     }
+    // Bike availability is derived live from bookings (see GET /api/bikes/availability),
+    // so there is no per-bike flag to reset here.
     res.status(200).json({ message: 'Cron job executed successfully.' });
   } catch (err) {
     console.error('Cron job error:', err);
@@ -616,6 +616,35 @@ app.post('/api/reviews', async (req, res) => {
   }
 });
 
+// ---------------------- Availability ----------------------
+
+// Availability is derived live from bookings rather than a stored flag: a bike
+// is "unavailable" if a booking spans the current moment. Returns a map of only
+// the bikes that are booked right now, with the time each one frees up.
+app.get('/api/bikes/availability', async (req, res) => {
+  try {
+    const now = new Date();
+    const activeNow = await Booking.find({
+      startTime: { $lte: now },
+      endTime: { $gte: now },
+    });
+
+    const unavailable = {};
+    activeNow.forEach((booking) => {
+      const existing = unavailable[booking.bikeId];
+      // If a bike has back-to-back bookings, report the latest free-up time.
+      if (!existing || new Date(booking.endTime) > new Date(existing.until)) {
+        unavailable[booking.bikeId] = { until: booking.endTime };
+      }
+    });
+
+    res.status(200).json({ status: 'ok', unavailable });
+  } catch (err) {
+    console.error('Availability error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
+
 
 
 app.post('/api/booking', async (req, res) => {
@@ -634,6 +663,10 @@ app.post('/api/booking', async (req, res) => {
       return res.status(400).json({ status: 'error', message: 'End time must be after start time.' });
     }
 
+    if (end < new Date()) {
+      return res.status(400).json({ status: 'error', message: 'Cannot book a time in the past.' });
+    }
+
     // Fetch authoritative price from Sanity — never trust client-submitted price
     const bike = await sanityClient.fetch(
       `*[_type == "bike" && _id == $bikeId][0]{ price }`,
@@ -643,26 +676,31 @@ app.post('/api/booking', async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'Bike not found or has no price set.' });
     }
 
-    const hours = (end - start) / 1000 / 60 / 60;
-    const calculatedPrice = bike.price * hours;
+    // Charged per whole hour with a 1-hour minimum. The tiny epsilon avoids
+    // floating-point rounding a clean hour (e.g. 2.0000001) up to the next hour.
+    const rawHours = (end - start) / 1000 / 60 / 60;
+    const billableHours = Math.max(1, Math.ceil(rawHours - 1e-9));
+    const calculatedPrice = Math.round(bike.price * billableHours);
 
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({ status: 'error', message: 'User not found. Please sign up first.' });
     }
 
-    // Check for overlapping bookings
+    // Conflicts include a 10-minute buffer before each existing booking's start,
+    // so a new booking must end at least 10 minutes before the next one begins.
+    const BUFFER_MS = 10 * 60 * 1000;
     const overlappingBooking = await Booking.findOne({
       bikeId,
-      $or: [
-        { startTime: { $lt: end, $gte: start } },
-        { endTime: { $gt: start, $lte: end } },
-        { startTime: { $lte: start }, endTime: { $gte: end } }
-      ]
+      startTime: { $lt: new Date(end.getTime() + BUFFER_MS) },
+      endTime: { $gt: start },
     });
 
     if (overlappingBooking) {
-      return res.status(400).json({ status: 'error', message: 'Bike is already booked for the selected time.' });
+      return res.status(400).json({
+        status: 'error',
+        message: 'Bike is unavailable for the selected time. Bookings need a 10-minute gap before the next one starts.',
+      });
     }
 
     const booking = new Booking({
