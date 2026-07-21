@@ -18,6 +18,9 @@ const jwt = require('jsonwebtoken');
 const User = require('./models/userSchema');
 const Booking = require('./models/bookingSchema');
 const Review = require('./models/reviewSchema');
+const Payment = require('./models/paymentSchema');
+
+const payments = require('./services/payments');
 
 const cron = require('node-cron');
 const { createClient } = require('@sanity/client');
@@ -71,6 +74,86 @@ const transporter = nodemailer.createTransport({
     pass: process.env.EMAIL_PASS,
   },
 });
+
+// Sends the booking confirmation emails (to renter + owner). Called after a
+// payment is confirmed, not at booking time.
+async function sendBookingEmails(booking, user) {
+  const formattedStartTime = new Date(booking.startTime).toLocaleString();
+  const formattedEndTime = new Date(booking.endTime).toLocaleString();
+  const price = Number(booking.price).toFixed(2);
+
+  // Email to renter
+  await transporter.sendMail({
+    from: process.env.EMAIL_USER,
+    to: user.email,
+    subject: 'Bike Booking Confirmed & Paid',
+    html: `
+      <h2>Booking Confirmed!</h2>
+      <p>Your payment was received and your booking is confirmed.</p>
+      <ul>
+        <li><strong>Bike Owner:</strong> ${booking.bikeOwner}</li>
+        <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
+        <li><strong>Location:</strong> ${booking.bikeLocation}</li>
+        <li><strong>Amount Paid:</strong> KSh ${price}</li>
+      </ul>
+    `,
+  });
+
+  // Email to bike owner (recipient hardcoded for now)
+  await transporter.sendMail({
+    from: process.env.EMAIL_USER,
+    to: 'testingjim232@gmail.com',
+    subject: 'Your Bike Has Been Booked & Paid',
+    html: `
+      <h2>Your bike has been booked!</h2>
+      <ul>
+        <li><strong>User Name:</strong> ${`${user.firstName || ''} ${user.lastName || ''}`.trim()}</li>
+        <li><strong>User Email:</strong> ${user.email}</li>
+        <li><strong>User Phone:</strong> ${user.phone || ''}</li>
+        <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
+        <li><strong>Location:</strong> ${booking.bikeLocation}</li>
+        <li><strong>Amount Paid:</strong> KSh ${price}</li>
+      </ul>
+    `,
+  });
+}
+
+// Single place that reconciles a payment with a provider result. Idempotent:
+// marks the booking paid, sends emails once, and records net/tracking info.
+// Used by both the webhook and the verify-on-return endpoint.
+async function applyPaymentResult(payment, result) {
+  payment.status = result.status;
+  if (result.invoiceId) payment.invoiceId = result.invoiceId;
+  if (result.netAmount != null) payment.netAmount = result.netAmount;
+  if (result.trackingId) payment.trackingId = result.trackingId;
+
+  if (result.status === 'paid') {
+    if (!payment.paidAt) payment.paidAt = new Date();
+
+    const booking = await Booking.findByIdAndUpdate(
+      payment.booking,
+      { paymentStatus: 'paid', status: 'active' },
+      { new: true }
+    );
+
+    // Send confirmation emails exactly once.
+    if (booking && !payment.notificationSent) {
+      try {
+        const user = await User.findById(payment.user);
+        if (user) {
+          await sendBookingEmails(booking, user);
+          payment.notificationSent = true;
+        }
+      } catch (mailErr) {
+        console.error('Failed to send booking emails:', mailErr);
+        // Don't fail the payment confirmation just because email failed.
+      }
+    }
+  }
+
+  await payment.save();
+  return payment;
+}
 
 // // Run every 5 minutes
 // cron.schedule('*/5 * * * *', async () => {
@@ -645,6 +728,223 @@ app.get('/api/bikes/availability', async (req, res) => {
   }
 });
 
+// ---------------------- Payments ----------------------
+
+// Start a payment for a booking. Returns a hosted checkout URL the client
+// redirects to (M-Pesa STK Push / card).
+app.post('/api/payments/checkout', async (req, res) => {
+  const email = req.query.email;
+  const { bookingId } = req.body;
+
+  if (!email || !bookingId) {
+    return res.status(400).json({ status: 'error', message: 'email and bookingId are required.' });
+  }
+
+  try {
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found.' });
+    }
+
+    const booking = await Booking.findById(bookingId);
+    if (!booking) {
+      return res.status(404).json({ status: 'error', message: 'Booking not found.' });
+    }
+    if (String(booking.user) !== String(user._id)) {
+      return res.status(403).json({ status: 'error', message: 'This booking does not belong to you.' });
+    }
+    if (booking.paymentStatus === 'paid') {
+      return res.status(400).json({ status: 'error', message: 'This booking is already paid.' });
+    }
+
+    // Amount always comes from the booking (server-calculated), never the client.
+    const originalAmount = booking.price;
+
+    // Testing escape hatch: set PAYMENT_TEST_AMOUNT=1 in .env to charge a flat
+    // 1 KES for every booking. Remove/unset it to charge real prices again.
+    const testAmount = Number(process.env.PAYMENT_TEST_AMOUNT);
+    const useTestAmount = Number.isFinite(testAmount) && testAmount > 0;
+    const amount = useTestAmount ? testAmount : originalAmount;
+
+    if (useTestAmount) {
+      console.warn(`[payments] TEST MODE: charging ${amount} KES instead of ${originalAmount} KES`);
+    }
+
+    // IntaSend rejects amounts under its per-method floor ("Amount provided is
+    // below allowed limit for payment method"), which surfaces confusingly on
+    // their hosted page. Fail here instead, with a message that says why.
+    const MIN_CHARGE_KES = 10;
+    if (amount < MIN_CHARGE_KES) {
+      return res.status(400).json({
+        status: 'error',
+        message: `Amount (${amount} KES) is below the payment provider's minimum of ${MIN_CHARGE_KES} KES.`,
+      });
+    }
+
+    const apiRef = `BIKEY-${booking._id}-${Date.now()}`;
+
+    const payment = new Payment({
+      booking: booking._id,
+      user: user._id,
+      userEmail: user.email,
+      bikeId: booking.bikeId,
+      bikeOwner: booking.bikeOwner,
+      amount,
+      originalAmount,
+      providerRef: apiRef,
+      provider: payments.name,
+      status: 'pending',
+    });
+
+    const checkout = await payments.createCheckout({
+      amount,
+      email: user.email,
+      firstName: user.firstName || user.username || 'Bikey',
+      lastName: user.lastName || 'User',
+      apiRef,
+      host: process.env.FRONTEND_URL,
+      redirectUrl: `${process.env.FRONTEND_URL}/payment/callback?ref=${encodeURIComponent(apiRef)}`,
+    });
+
+    payment.checkoutId = checkout.checkoutId;
+    payment.signature = checkout.signature;
+    payment.checkoutUrl = checkout.checkoutUrl;
+    payment.invoiceId = checkout.invoiceId;
+    await payment.save();
+
+    res.status(201).json({
+      status: 'ok',
+      checkoutUrl: checkout.checkoutUrl,
+      ref: apiRef,
+      amount,
+      originalAmount,
+      testMode: useTestAmount,
+    });
+  } catch (err) {
+    console.error('Create checkout error:', err);
+    res.status(500).json({ status: 'error', message: 'Could not start payment. Please try again.' });
+  }
+});
+
+// Read the current confirmation status of a payment. The callback page polls
+// this after the user returns from checkout.
+//
+// Note: IntaSend's status API requires the invoice_id, which only exists once
+// payment completes and is delivered via webhook — it is NOT in the redirect
+// URL. So this endpoint re-checks with the provider only if we already have an
+// invoice_id (from the webhook); otherwise it reports the stored status, which
+// the webhook keeps up to date.
+app.get('/api/payments/verify', async (req, res) => {
+  const { ref } = req.query;
+  if (!ref) {
+    return res.status(400).json({ status: 'error', message: 'ref is required.' });
+  }
+
+  try {
+    const payment = await Payment.findOne({ providerRef: ref });
+    if (!payment) {
+      return res.status(404).json({ status: 'error', message: 'Payment not found.' });
+    }
+
+    // Re-confirm with the provider when we can (invoice_id known and not yet paid).
+    if (payment.status !== 'paid' && payment.invoiceId) {
+      try {
+        const result = await payments.verifyPayment({ invoiceId: payment.invoiceId });
+        await applyPaymentResult(payment, result);
+      } catch (verifyErr) {
+        console.error('Provider verify failed, falling back to stored status:', verifyErr);
+      }
+    }
+
+    res.status(200).json({
+      status: 'ok',
+      paymentStatus: payment.status,
+      amount: payment.amount,
+      netAmount: payment.netAmount,
+    });
+  } catch (err) {
+    console.error('Verify payment error:', err);
+    res.status(500).json({ status: 'error', message: 'Could not verify payment.' });
+  }
+});
+
+// Authoritative confirmation path. IntaSend POSTs here when a payment settles,
+// including the invoice_id, api_ref and state. Requires a public URL (works in
+// production on Vercel). We re-verify with the provider rather than trusting
+// the payload outright.
+app.post('/api/payments/webhook', async (req, res) => {
+  try {
+    // Optional shared-secret check. Configure the same value as your IntaSend
+    // webhook "challenge" to reject spoofed calls.
+    const expectedChallenge = process.env.INTASEND_WEBHOOK_CHALLENGE;
+    if (expectedChallenge && req.body.challenge !== expectedChallenge) {
+      return res.status(401).json({ status: 'error', message: 'Invalid challenge.' });
+    }
+
+    const apiRef = req.body.api_ref;
+    const invoiceId = req.body.invoice_id;
+    if (!apiRef && !invoiceId) {
+      return res.status(400).json({ status: 'error', message: 'api_ref or invoice_id required.' });
+    }
+
+    const payment = apiRef
+      ? await Payment.findOne({ providerRef: apiRef })
+      : await Payment.findOne({ invoiceId });
+
+    if (!payment) {
+      // Acknowledge so IntaSend doesn't keep retrying an unknown ref.
+      return res.status(200).json({ status: 'ok', message: 'No matching payment.' });
+    }
+
+    if (payment.status !== 'paid') {
+      if (invoiceId && !payment.invoiceId) payment.invoiceId = invoiceId;
+
+      // Re-verify with the provider using the now-known invoice_id.
+      const result = await payments.verifyPayment({ invoiceId: payment.invoiceId });
+      await applyPaymentResult(payment, result);
+    }
+
+    res.status(200).json({ status: 'ok' });
+  } catch (err) {
+    console.error('Payment webhook error:', err);
+    res.status(500).json({ status: 'error', message: 'Webhook handling failed.' });
+  }
+});
+
+// Earnings time-series for the owner / admin dashboards.
+//   ?owner=<bikeOwner>  restricts to one owner (omit for platform-wide/admin)
+//   ?groupBy=day|month  bucket size (default: day)
+app.get('/api/payments/earnings', async (req, res) => {
+  const { owner, groupBy } = req.query;
+  const format = groupBy === 'month' ? '%Y-%m' : '%Y-%m-%d';
+
+  try {
+    const match = { status: 'paid' };
+    if (owner) match.bikeOwner = owner;
+
+    const series = await Payment.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: { $dateToString: { format, date: '$paidAt' } },
+          total: { $sum: '$amount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+      { $project: { _id: 0, date: '$_id', total: 1, count: 1 } },
+    ]);
+
+    const totalEarnings = series.reduce((sum, point) => sum + point.total, 0);
+    const totalPayments = series.reduce((sum, point) => sum + point.count, 0);
+
+    res.status(200).json({ status: 'ok', series, totalEarnings, totalPayments });
+  } catch (err) {
+    console.error('Earnings error:', err);
+    res.status(500).json({ status: 'error', message: 'Internal server error.' });
+  }
+});
+
 
 
 app.post('/api/booking', async (req, res) => {
@@ -719,44 +1019,8 @@ app.post('/api/booking', async (req, res) => {
 
     await booking.save();
 
-    const formattedStartTime = start.toLocaleString();
-    const formattedEndTime = end.toLocaleString();
-
-    // Send email to user
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: user.email,
-      subject: 'Bike Booking Confirmation',
-      html: `
-        <h2>Booking Confirmed!</h2>
-        <p>You have successfully booked a bike.</p>
-        <ul>
-          <li><strong>Bike Owner:</strong> ${bikeOwner.name || bikeOwner}</li>
-          <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
-          <li><strong>Location:</strong> ${bikeLocation}</li>
-          <li><strong>Price:</strong> KSh ${calculatedPrice.toFixed(2)}</li>
-        </ul>
-      `
-    });
-
-    // Send email to bike owner
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: 'testingjim232@gmail.com' || bikeOwner.email,
-      subject: 'Your Bike Has Been Booked',
-      html: `
-        <h2>Your bike has been booked!</h2>
-        <ul>
-          <li><strong>User Name:</strong> ${user.name || ''}</li>
-          <li><strong>User Email:</strong> ${user.email}</li>
-          <li><strong>User Phone:</strong> ${user.phone || ''}</li>
-          <li><strong>Booking Time:</strong> ${formattedStartTime} to ${formattedEndTime}</li>
-          <li><strong>Location:</strong> ${bikeLocation}</li>
-          <li><strong>Price:</strong> KSh ${calculatedPrice.toFixed(2)}</li>
-        </ul>
-      `
-    });
-
+    // Confirmation emails are sent after payment is received (see
+    // applyPaymentResult), not here.
     res.status(200).json({ status: 'ok', message: 'Booking successful', booking });
   } catch (err) {
     console.error('Booking error:', err);
