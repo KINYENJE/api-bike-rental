@@ -874,15 +874,19 @@ app.get('/api/payments/verify', async (req, res) => {
 // the payload outright.
 app.post('/api/payments/webhook', async (req, res) => {
   try {
+    console.log('[payments] webhook received:', JSON.stringify(req.body));
+
     // Optional shared-secret check. Configure the same value as your IntaSend
-    // webhook "challenge" to reject spoofed calls.
+    // webhook "challenge" to reject spoofed calls. Strongly recommended.
     const expectedChallenge = process.env.INTASEND_WEBHOOK_CHALLENGE;
     if (expectedChallenge && req.body.challenge !== expectedChallenge) {
+      console.warn('[payments] webhook rejected: challenge mismatch');
       return res.status(401).json({ status: 'error', message: 'Invalid challenge.' });
     }
 
     const apiRef = req.body.api_ref;
     const invoiceId = req.body.invoice_id;
+    const state = req.body.state;
     if (!apiRef && !invoiceId) {
       return res.status(400).json({ status: 'error', message: 'api_ref or invoice_id required.' });
     }
@@ -897,11 +901,23 @@ app.post('/api/payments/webhook', async (req, res) => {
     }
 
     if (payment.status !== 'paid') {
-      if (invoiceId && !payment.invoiceId) payment.invoiceId = invoiceId;
-
-      // Re-verify with the provider using the now-known invoice_id.
-      const result = await payments.verifyPayment({ invoiceId: payment.invoiceId });
-      await applyPaymentResult(payment, result);
+      // Trust the challenge-authenticated payload state directly. (The status
+      // API can't be used as a fallback here because it needs the invoice_id,
+      // which we only receive via this webhook in the first place.)
+      if (state === 'COMPLETE') {
+        await applyPaymentResult(payment, {
+          status: 'paid',
+          invoiceId,
+          netAmount: req.body.net_amount != null ? Number(req.body.net_amount) : undefined,
+          trackingId: req.body.tracking_id,
+        });
+      } else if (state === 'FAILED') {
+        await applyPaymentResult(payment, { status: 'failed', invoiceId });
+      } else if (invoiceId) {
+        // Non-terminal state — just record the invoice_id for later verification.
+        payment.invoiceId = invoiceId;
+        await payment.save();
+      }
     }
 
     res.status(200).json({ status: 'ok' });
